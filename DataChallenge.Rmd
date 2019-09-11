@@ -1,0 +1,204 @@
+---
+title: "Fraud Detection - Data Challenge"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Company XYZ is an e-commerce site that sells hand-made clothes. You have to build a model that predicts whether a user has a high probability of using the site to perform some illegal activity or not.
+
+You only have information about the user first transaction on the site and based on that you have to make your classification ("fraud/no fraud").
+
+These are the tasks you are asked to do:
+
+For each user, determine her country based on the numeric IP address.
+
+Build a model to predict whether an activity is fraudulent or not. Explain how different assumptions about the cost of false positives vs false negatives would impact the model.
+
+Your boss is a bit worried about using a model she doesn't understand for something as important as fraud detection. How would you explain her how the model is making the predictions? Not from a mathematical perspective (she couldn't care less about that), but from a user perspective. What kinds of users are more likely to be classified as at risk? What are their characteristics?
+
+Let's say you now have this model which can be used live to predict in real time if an activity is fraudulent or not.
+
+From a product perspective, how would you use it? That is, what kind of different user experiences would you build based on the model output?
+
+Data: "Fraud_Data" - information about each user first transaction
+
+Columns:
+
+user_id : Id of the user. Unique by user
+signup_time : the time when the user created her account (GMT time) purchase_time : the time when the user bought the item (GMT time) purchase_value : the cost of the item purchased (USD)
+device_id : the device id. You can assume that it is unique by device. I.e., transaJtions with the same device ID means that the same physical device was used to buy
+source : user marketing channel: ads, SEO, Direct (i.e. came to the site by directly typing the site address on the browser).
+browser : the browser used by the user.
+sex : user sex: Male/Female
+age : user age
+ip_address : user numeric ip address
+class : this is what we are trying to predict: whether the activity was fraudulent (1) or not (0).
+"IpAddress_to_Country" - mapping each numeric ip address to its country. For each country, it gives a range. If the numeric ip address falls within the range, then the ip address belongs to the corresponding country.
+
+Columns:
+
+lower_bound_ip_address : the lower bound of the numeric ip address for that country
+upper_bound_ip_address : the upper bound of the numeric ip address for that country
+country : the corresponding country. If a user has an ip address whose value is within the upper and lower
+
+```{r lib, message=FALSE}
+#load libraries
+library(dplyr)
+library(corrplot)
+library(ggplot2)
+```
+
+## Read from CSV File
+```{r message=FALSE}
+fraudData= read.csv('C:\\Data Challenge\\Fraud_Data.csv', header = TRUE, stringsAsFactor = FALSE)
+str(fraudData)
+```
+
+
+## EDA
+
+```{r}
+sum(rowSums(is.na(fraudData)))
+summary(fraudData)
+```
+
+
+```{r}
+#correlation of numeric variables
+numericCols = fraudData[,sapply(fraudData, is.numeric)]
+fdCor = cor(numericCols[,-1], use="complete.obs")
+corrplot(cor(fdCor), method = "circle")
+
+```
+```{r plots}
+hist(fraudData$class)
+#ggplot(fraudData, aes(x=sex, y = SalePrice))+ geom_col() + coord_flip()
+
+#relation between browser and class
+ggplot(fraudData, aes(browser, ..count..)) + geom_bar(aes(fill = as.factor(class)), position = "dodge")
+
+#relation between sex and class
+ggplot(fraudData, aes(sex, ..count..)) + geom_bar(aes(fill = as.factor(class)), position = "dodge")
+
+#relation between source and class
+ggplot(fraudData, aes(source, ..count..)) + geom_bar(aes(fill = as.factor(class)), position = "dodge")
+
+#relation between ip_address and class
+ggplot(fraudData, aes(ip_address, ..count..)) + geom_bar(aes(fill = as.factor(class)), position = "dodge")
+```
+##Features Engineering
+
+###Country - IPAddress Mapping
+```{r countrymapping, message=FALSE}
+library(data.table)
+#get country country - ipaddress mapping
+countryIP = read.csv('C:\\Data Challenge\\IpAddress_to_Country.csv',header = TRUE, stringsAsFactor = FALSE)
+
+dt1 <- data.table(fraudData)
+dt1[, extra_ip_address := ip_address]
+dt2 <- data.table(countryIP)
+setkey(dt2, lower_bound_ip_address, upper_bound_ip_address)
+
+result <- foverlaps(dt1, dt2, by.x=c('ip_address', 'extra_ip_address'), 
+                    by.y=c('lower_bound_ip_address', 'upper_bound_ip_address'))
+
+fraudDatawithcountry = data.frame(result)
+fraudDatawithcountry[is.na(fraudDatawithcountry$country),]$country = "Not Available"
+fraudDatawithcountry[,c("extra_ip_address","lower_bound_ip_address","upper_bound_ip_address")] = NULL
+tail(fraudDatawithcountry)
+
+
+#relation between country and class
+ggplot(fraudDatawithcountry, aes(country, ..count..)) + geom_bar(aes(fill = as.factor(class)), position = "dodge") + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+##If country variable is converted to 'factors', it has 182 levels - is not a useful variable for training models
+
+
+```
+
+
+###Preparing Data
+
+```{r features, message=FALSE}
+library(lubridate)
+#Convert date to numeric
+#convert dates to numeric
+library(lubridate)
+
+
+fraudData$signup_Year = format(as.Date(fraudData$signup_time,"%m/%d/%Y"),"%Y")
+fraudData$signup_Month = format(as.Date(fraudData$signup_time,"%m/%d/%Y"),"%m")
+fraudData$signup_Day = format(as.Date(fraudData$signup_time,"%m/%d/%Y"),"%d")
+
+fraudData$purchase_Year = format(as.Date(fraudData$purchase_time,"%m/%d/%Y"),"%Y")
+fraudData$purchase_Month = format(as.Date(fraudData$purchase_time,"%m/%d/%Y"),"%m")
+fraudData$purchase_Day = format(as.Date(fraudData$purchase_time,"%m/%d/%Y"),"%d")
+
+fraudData$signup_Time = format(strptime(fraudData$signup_time,"%m/%d/%Y %H:%M",tz=""),"%H:%M")
+fraudData$signup_Time = as.POSIXct(fraudData$signup_Time,format="%H:%M")
+fraudData$purchase_Time = format(strptime(fraudData$purchase_time,"%m/%d/%Y %H:%M",tz=""),"%H:%M")
+fraudData$purchase_Time = as.POSIXct(fraudData$purchase_Time,format="%H:%M")
+fraudData$time_lapse = as.Date(fraudData$purchase_time, "%m/%d/%Y %H:%M",tz="") - as.Date(fraudData$signup_time, "%m/%d/%Y %H:%M",tz="")
+
+
+#remove device_id 
+#In our data set device_id corresponds to ip address - in reality device_id cannot be spoofed as ip address
+fraudData[,c(2,3,5)] = NULL
+
+#convert character data to factors
+fraudData$source = as.factor(fraudData$source)
+fraudData$browser = as.factor(fraudData$browser)
+fraudData$sex = as.factor(fraudData$sex)
+fraudData$class = as.factor(fraudData$class)
+
+#separate train and test sets 70-30
+set.seed(0)
+train = sample(1:nrow(fraudData), nrow(fraudData)*0.7)
+test = fraudData[-train,]
+train = fraudData[train,]
+```
+
+##Training & Prediction
+```{r  message=FALSE}
+library(caret)
+```
+##Random Forest - Determine Variable importance
+```{r message=FALSE}
+library(randomForest)
+set.seed(10)
+rf.model = randomForest(class ~ ., data = train, ntree = 100, nodesize = 20)
+#rf.predict <- predict(rf.model, test)
+#confusionMatrix(test$class, rf.predict)
+varImpPlot(rf.model)
+```
+
+##Logistic Regression
+```{r glm, message=FALSE}
+library(stats)
+glm.model = glm(class ~ purchase_Month, data = train, family = "binomial") #, control = list(maxit = 50))
+glm.predict = predict(glm.model, test, type = "response")
+glm.predict=ifelse(glm.predict>0.5,1,0)
+lm.ac=length(which(glm.predict==test$class))
+lm.ac=lm.ac/nrow(test)
+#Accuracy
+lm.ac
+```
+
+##Conclusion
+#####IN PROGRESS
+
+
+##Advantages
+#####1. Real-time processing
+#####2. Reduced number of verification methods
+#####3. Minimize fraud detection time (automatic detection)
+
+##References
+
+######https://rpubs.com/kieroneil/321413
+######https://www.marutitech.com/machine-learning-fraud-detection/
+######https://nycdatascience.com/blog/student-works/credit-card-fraud-detection/
+######https://www.bue.edu.eg/pdfs/Research/ACE/5%20Online%20Proceeding/9%20Artificial%20Intelligence%20Techniques%20&%20Applications%20(ETI02)/Data%20Mining%20Techniques%20for%20Credit%20Card%20Fraud%20Detection%20Empirical%20Study.pdf
